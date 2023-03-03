@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 type SearchArgs struct {
@@ -55,17 +56,65 @@ func main() {
 		query.link_term = request_args.Get("link_term")
 		query.source = request_args.Get("source")
 		query.sort = request_args.Get("sort")
-		c.JSON(http.StatusOK, gin.H{"start": start, "end": end})
+		gallica_records := get_row_context(query)
+		c.JSON(http.StatusOK, gallica_records)
 	})
 	r.Run()
 }
 
-func get_row_context(args SearchArgs) {
+type UserResponse struct {
+	records     []GallicaRecord
+	num_results int
+	origin_urls []string
+}
+
+func get_row_context(args SearchArgs) UserResponse {
+	gallica_params := rest_args_to_gallica_params(args)
+	fmt.Println(gallica_params)
+	return UserResponse{
+		records:     []GallicaRecord{},
+		num_results: 0,
+		origin_urls: []string{},
+	}
+
 }
 
 func rest_args_to_gallica_params(args SearchArgs) GallicaQueryParams {
-	cql := "make string"
-	
+	var gram_cql string
+	var date_cql string
+	var paper_cql string
+
+	if args.link_term != "" && args.link_distance != 0 && len(args.terms) == 1 {
+		gram_cql = fmt.Sprintf(`text adj "%s" prox/unit=word/distance=%d "%s"`, args.terms[0], args.link_distance, args.link_term)
+	} else if len(args.terms) > 0 {
+		gram_cql = `text adj "` + strings.Join(args.terms, `" or text adj "`) + `"`
+	}
+
+	if args.start_date != "" && args.end_date != "" {
+		date_cql = fmt.Sprintf("gallicapublication_date >= \"%s\" and gallicapublication_date < \"%s\"", args.start_date, args.end_date)
+	} else if args.start_date != "" {
+		date_cql = fmt.Sprintf("gallicapublication_date >= \"%s\"", args.start_date)
+	} else if args.end_date != "" {
+		date_cql = fmt.Sprintf("gallicapublication_date < \"%s\"", args.end_date)
+	}
+
+	if len(args.codes) > 0 {
+		formatted_codes := make([]string, len(args.codes))
+		for i, code := range args.codes {
+			formatted_codes[i] = code + "_date"
+		}
+		paper_cql = `arkPress adj "` + strings.Join(formatted_codes, `" or arkPress adj "`) + `"`
+	} else if args.source == "periodical" {
+		paper_cql = `dc.type all "fascicule"`
+	} else if args.source == "book" {
+		paper_cql = `dc.type all "monographie"`
+	} else {
+		paper_cql = `dc.type all "fascicule" or dc.type all "monographie"`
+	}
+
+	cql_components := []string{gram_cql, date_cql, paper_cql}
+	cql := strings.Join(cql_components, " and ")
+
 	return GallicaQueryParams{
 		operation:      "searchRetrieve",
 		exactSearch:    true,
