@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
-	"github.com/gin-gonic/gin"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 type SearchArgs struct {
@@ -70,9 +73,9 @@ type UserResponse struct {
 
 func get_row_context(args SearchArgs) UserResponse {
 	gallica_params := rest_args_to_gallica_params(args)
-	fmt.Println(gallica_params)
+	gallica_records := get_gallica_records(gallica_params, "http://gallica.bnf.fr/SRU")
 	return UserResponse{
-		records:     []GallicaRecord{},
+		records:     gallica_records,
 		num_results: 0,
 		origin_urls: []string{},
 	}
@@ -90,11 +93,11 @@ func rest_args_to_gallica_params(args SearchArgs) GallicaQueryParams {
 		gram_cql = `text adj "` + strings.Join(args.terms, `" or text adj "`) + `"`
 	}
 
-	if args.start_date != "" && args.end_date != "" {
+	if args.start_date != "0" && args.end_date != "0" {
 		date_cql = fmt.Sprintf("gallicapublication_date >= \"%s\" and gallicapublication_date < \"%s\"", args.start_date, args.end_date)
-	} else if args.start_date != "" {
+	} else if args.start_date != "0" {
 		date_cql = fmt.Sprintf("gallicapublication_date >= \"%s\"", args.start_date)
-	} else if args.end_date != "" {
+	} else if args.end_date != "0" {
 		date_cql = fmt.Sprintf("gallicapublication_date < \"%s\"", args.end_date)
 	}
 
@@ -112,8 +115,22 @@ func rest_args_to_gallica_params(args SearchArgs) GallicaQueryParams {
 		paper_cql = `dc.type all "fascicule" or dc.type all "monographie"`
 	}
 
-	cql_components := []string{gram_cql, date_cql, paper_cql}
+	cql_components := []string{}
+	if gram_cql != "" {
+		cql_components = append(cql_components, gram_cql)
+	}
+	if date_cql != "" {
+		cql_components = append(cql_components, date_cql)
+	}
+	if paper_cql != "" {
+		cql_components = append(cql_components, paper_cql)
+	}
+
 	cql := strings.Join(cql_components, " and ")
+
+	if args.limit == 0 {
+		args.limit = 10
+	}
 
 	return GallicaQueryParams{
 		operation:      "searchRetrieve",
@@ -127,6 +144,35 @@ func rest_args_to_gallica_params(args SearchArgs) GallicaQueryParams {
 
 }
 
+func get_gallica_records(params GallicaQueryParams, endpoint string) []GallicaRecord {
+	query := url.Values{}
+	query.Add("operation", params.operation)
+	query.Add("exactSearch", strconv.FormatBool(params.exactSearch))
+	query.Add("version", strconv.FormatFloat(float64(params.version), 'f', 1, 32))
+	query.Add("startRecord", strconv.Itoa(params.startRecord))
+	query.Add("maximumRecords", strconv.Itoa(params.maximumRecords))
+	query.Add("query", params.query)
+	query.Add("collapsing", strconv.FormatBool(params.collapsing))
+	fmt.Println(query.Encode())
+
+	resp, err := http.Get(endpoint + "?" + query.Encode())
+	if err != nil {
+		fmt.Println(err)
+	}
+	xml_body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println(err)
+	}
+	var gallica_xml_fields struct {
+		Records []GallicaRecord `xml:"records>record"`
+	}
+	if err := xml.Unmarshal(xml_body, &params); err != nil {
+		fmt.Println(err)
+	}
+
+	return []GallicaRecord{}
+}
+
 type GallicaQueryParams struct {
 	operation      string
 	exactSearch    bool
@@ -138,9 +184,4 @@ type GallicaQueryParams struct {
 }
 
 type GallicaRecord struct {
-}
-
-type GallicaWrapper interface {
-	get() []GallicaRecord
-	parse() []GallicaRecord
 }
